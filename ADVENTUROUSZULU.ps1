@@ -22,8 +22,8 @@ function Check-Dependencies {
 }
 
 function Test-UserCredential {
-    $Username = (Read-Host -Prompt "Enter the user's username: ").Trim()
-    $Password = Read-Host -Prompt "Enter the user's password: "
+    $Username = (Read-Host -Prompt "Enter the user's username").Trim()
+    $Password = Read-Host -Prompt "Enter the user's password"
     
     $SecurePassword = $Password | ConvertTo-SecureString -AsPlaintext -Force
     $Credential = [PSCredential]::New($Username, $SecurePassword)
@@ -39,8 +39,8 @@ function Test-UserCredential {
 }
 
 function Test-StorageAccountCredential {
-    $AccountName = (Read-Host -Prompt "Enter the storage account-name: ").Trim()
-    $AccountKey = Read-Host -Prompt "Enter the storage account-key: "
+    $AccountName = (Read-Host -Prompt "Enter the storage account-name").Trim()
+    $AccountKey = Read-Host -Prompt "Enter the storage account-key"
 
     $AzureStorageAccount = New-AzStorageContext -StorageAccountName $AccountName -StorageAccountKey $AccountKey
 
@@ -59,9 +59,9 @@ function Test-StorageAccountCredential {
 }
 
 function Test-ServicePrincipalCredential {
-    $Username = (Read-Host -Prompt "Enter the service principal's username: ").Trim()
-    $Password = Read-Host -Prompt "Enter the service principal's password: "
-    $Tenant = (Read-Host -Prompt "Enter the service principal's tenant's id: ").Trim()
+    $Username = (Read-Host -Prompt "Enter the service principal's username").Trim()
+    $Password = Read-Host -Prompt "Enter the service principal's password"
+    $Tenant = (Read-Host -Prompt "Enter the service principal's tenant's id").Trim()
 
     $SecurePassword = $Password | ConvertTo-SecureString -AsPlaintext -Force
     $Credential = [PSCredential]::New($Username, $SecurePassword)
@@ -76,7 +76,49 @@ function Test-ServicePrincipalCredential {
     }
 }
 
-function AWRYZENITH {
+function Get-ScopesAccess {
+    $Context = Get-AzContext
+
+    # Azure Accounts can have access to 4 different scopes - Management Groups, Subscriptions, Resource Groups, Resources
+    $ManagementGroups = Get-AzManagementGroup -DefaultProfile $Context
+
+    # TODO: output management group info
+
+    $Tenants = Get-AzTenant -DefaultProfile $Context
+
+    Write-Output ""
+    Write-Output "Accessible Tenants: "
+    $Tenants | ForEach-Object {
+        '{0} ({1}) - {2}' -f $_.Id, $_.Name, ($_.Domains -join ",")
+    }
+
+    $Subscriptions = Get-AzSubscription -DefaultProfile $Context
+
+    Write-Output ""
+    Write-Output "Accessible Subscriptions: "
+    $Subscriptions | ForEach-Object {
+        '{0} ({1})' -f $_.Id, $_.Name
+    }
+
+    ForEach($Subscription in $Subscriptions) {
+        $Context = Set-AzContext -SubscriptionId $Subscription.Id
+        $ResourceGroups = Get-AzResourceGroup -DefaultProfile $Context
+
+	Write-Output ""
+	Write-Output "Accessible Resource Groups: "
+	$ResourceGroups | ForEach-Object {
+	    '{0}' -f $_.Name
+	}
+
+        ForEach($ResourceGroup in $ResourceGroups) {
+	    $Resources = Get-AzResource -DefaultProfile $Context
+	    Write-Output $Resources.Name
+	}
+    }
+
+}
+
+function ADVENTUROUSZULU {
 <# 
 .SYNOPSIS
   Script initialization routine
@@ -85,7 +127,10 @@ function AWRYZENITH {
     $ErrorActionPreference = "SilentlyContinue"
 
     If(Check-Dependencies) {
-        Write-Host "Welcome to AWRYZENITH" 
+        Write-Host "Welcome to ADVENTUROUSZULU" 
+    } Else {
+        Write-Host "You do not meet the minimum dependencies to run ADVENTUROUSZULU"
+        Exit
     }
 
     # Support other credential types such as SPs with Certificates 
@@ -114,10 +159,11 @@ Service Principal (sp):
     
 "@
 
-    $CredentialType = Read-Host -Prompt "Enter the type of credential you have (user, sa, or sp): "
+    $CredentialType = Read-Host -Prompt "Enter the type of credential you have (user, sa, or sp)"
 
     If($CredentialType -eq "user") {
         Test-UserCredential
+	Get-ScopesAccess
     } ElseIf($CredentialType -eq "sa") {
 	Test-StorageAccountCredential
     } ElseIf($CredentialType -eq "sp") {
@@ -128,4 +174,4 @@ Service Principal (sp):
     }
 }
 
-AWRYZENITH
+ADVENTUROUSZULU
