@@ -77,7 +77,10 @@ function Test-ServicePrincipalCredential {
 }
 
 function Get-ScopesAccess {
+    Write-Output ""
+    Write-Output "Printing out accessible resources/resource groups/subscriptions/tenants with the provided credentials"
     $Context = Get-AzContext
+    $AllResources = @()
 
     # Azure Accounts can have access to 4 different scopes - Management Groups, Subscriptions, Resource Groups, Resources
     $ManagementGroups = Get-AzManagementGroup -DefaultProfile $Context
@@ -92,29 +95,54 @@ function Get-ScopesAccess {
         '{0} ({1}) - {2}' -f $_.Id, $_.Name, ($_.Domains -join ",")
     }
 
+    # TODO: Ensure the following call to Get-AzSubscription will grab all subscriptions across multiple tenants
     $Subscriptions = Get-AzSubscription -DefaultProfile $Context
 
-    Write-Output ""
-    Write-Output "Accessible Subscriptions: "
-    $Subscriptions | ForEach-Object {
-        '{0} ({1})' -f $_.Id, $_.Name
-    }
-
     ForEach($Subscription in $Subscriptions) {
+        Write-Output ""
+        'Subscription: {0} ({1}):' -f $Subscription.Id, $Subscription.Name
+	Write-Output ""
+
         $Context = Set-AzContext -SubscriptionId $Subscription.Id
         $ResourceGroups = Get-AzResourceGroup -DefaultProfile $Context
 
-	Write-Output ""
-	Write-Output "Accessible Resource Groups: "
-	$ResourceGroups | ForEach-Object {
-	    '{0}' -f $_.Name
-	}
+        if(($ResourceGroups | Measure-Object).Count -gt 0) {
+	    Write-Output "Resource Groups / Resources: "
+	    ForEach($ResourceGroup in $ResourceGroups) {
+	        '  {0}' -f $ResourceGroup.ResourceGroupName
 
-        ForEach($ResourceGroup in $ResourceGroups) {
-	    $Resources = Get-AzResource -DefaultProfile $Context
-	    Write-Output $Resources.Name
+	        $Resources = Get-AzResource -DefaultProfile $Context -ResourceGroupName $ResourceGroup.ResourceGroupName
+
+	        ForEach($Resource in $Resources) {
+	            '    * {0} ({1})' -f $Resource.Name, $Resource.ResourceType
+		    $AllResources.Add($Resource) 
+	        }
+	    }
+	} Else {
+	    Write-Output "No read access to any resource groups, enumerating resources"
+	    Write-Output "Resource Groups / Resources: "
+
+	    $IdentifiedResources = Get-AzResource -DefaultProfile $Context
+	    $IdentifiedResourceGroups = $IdentifiedResources | Sort-Object -Property ResourceGroupName | Select-Object -Property ResourceGroupName
+
+	    ForEach($ResourceGroup in $IdentifiedResourceGroups) {
+		$ResourceGroupName = $ResourceGroup.ResourceGroupName
+	        '  {0} (No Access!)' -f $ResourceGroupName
+
+		$Resources = $IdentifiedResources | Where-Object { $_.ResourceGroupName -eq $ResourceGroupName }
+
+	        ForEach($Resource in $Resources) {
+	            '    * {0} ({1})' -f $Resource.Name, $Resource.ResourceType
+		    $AllResources.Add($Resource) 
+	        }
+	    }	
 	}
     }
+
+    return $AllResources
+}
+
+function Pillage-KeyVaults {
 
 }
 
@@ -155,7 +183,7 @@ Service Principal (sp):
     password: SuperChiapet1
     tenant: 987bb494-bfd4-413a-bfb3-958c1342f3a3
     
-    NOTE: Tenant is display as 'id' sometimes such as in the return value when creating an SP
+    NOTE: Tenant is displayed as 'id' sometimes such as in the return value when creating an SP
     
 "@
 
@@ -168,6 +196,7 @@ Service Principal (sp):
 	Test-StorageAccountCredential
     } ElseIf($CredentialType -eq "sp") {
 	Test-ServicePrincipalCredential 
+	Get-ScopesAccess
     } Else {
 	Write-Host "Unsupported Credential Type, exiting"
 	Exit
