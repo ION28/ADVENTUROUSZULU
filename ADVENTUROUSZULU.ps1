@@ -56,6 +56,8 @@ function Test-StorageAccountCredential {
         # TODO: Display info about why credentials were invalid as returned by Connect-AzAccount
         Write-Host "Invalid Storage Account Credentials!"
     }
+
+    return $AzureStorageAccount
 }
 
 function Test-ServicePrincipalCredential {
@@ -185,7 +187,92 @@ function Enumerate-KeyVaults ($AllResources) {
     }	
 }
 
-function Enumerate-StorageAccounts ($AllResources) {
+function Enumerate-StorageAccounts {
+    Param (
+        [Parameter(Mandatory=$true, Position=0)][AllowNull()][Object[]] $AllResources,
+	[Parameter(Mandatory=$true, Position=1)][AllowNull()][Object] $StorageAccountContext
+    )
+
+    # Storage Accounts store Containers (Blobs), Shares (Files), Queues (Queue), and Tables (Table)
+    # TODO: Support auth with connection string, account key, and sas tokens
+    Write-Host ""
+    If($StorageAccountContext -eq $null) {
+        $StorageAccounts = $AllResources | Where-Object { $_.ResourceType -eq "Microsoft.Storage/storageAccounts" }
+	Write-Host ("Enumerating accessible StorageAccounts' contents...Found {0} accessible StorageAccounts" -f ($StorageAccounts | Measure-Object).Count)
+    } Else {
+        Write-Host "Enumerating 1 accessible StorageAccount"
+	$StorageAccounts = @( @{ Name = $StorageAccountContext.StorageAccountName } ) 
+    }
+    
+    forEach($StorageAccount in $StorageAccounts) {
+	Write-Host ""
+	Write-Host ("StorageAccount {0}:" -f $StorageAccount.Name)
+
+	If($StorageAccountContext -eq $null) {
+	    $StorageContext = New-AzStorageContext -StorageAccountName $StorageAccount.Name
+	} Else {
+	    $StorageContext = $StorageAccountContext
+	}
+
+        # TODO: handle account key if no access
+	$Containers = Get-AzStorageContainer -Context $StorageContext
+	$Shares = Get-AzStorageShare -Context $StorageContext
+	$Queues = Get-AzStorageQueue -Context $StorageContext
+	$Tables = Get-AzStorageTable -Context $StorageContext
+
+        Write-Host ""
+        Write-Host "  Containers/Blobs: "
+	ForEach($Container in $Containers) {
+	    Write-Host ('    * {0}: ' -f $Container.Name)
+
+	    try {
+	        $Blobs = Get-AzStorageBlob -Context $StorageContext -Container $Container.Name -ErrorAction Stop
+	    } catch {
+	        If($_.Exception.message.Contains("AuthorizationPermissionMismatch")) {
+		    Write-Host "      (No List access to container)"
+		}
+		$Blobs = @()
+	    }
+	    
+	    ForEach($Blob in $Blobs) {
+	        Write-Host ('      - {0}' -f $Blob.Name)
+	    }
+	}
+        
+	Write-Host ""
+        Write-Host "  Shares/Files: "
+	ForEach($Share in $Shares) {
+	    Write-Host ('    * {0}: ' -f $Share.Name)
+
+	    try {
+	        $Files = Get-AzStorageFile -Context $StorageContext -ShareName $Share.Name -ErrorAction Stop
+	    } catch {
+	        If($_.Exception.message.Contains("AuthorizationPermissionMismatch")) {
+		    Write-Host "      (No List access to share)"
+		}
+		$Files = @()
+	    }
+	    
+	    ForEach($File in $Files) {
+	        Write-Host ('      - {0}' -f $File.Name)
+	    }
+	}
+        
+	Write-Host ""
+        Write-Host "  Queues: "
+	ForEach($Queue in $Queues) {
+	    Write-Host ('    * {0}: ' -f $Queue.Name)
+	}
+        
+	Write-Host ""
+        Write-Host "  Tables: "
+	ForEach($Table in $Tables) {
+	    Write-Host ('    * {0}: ' -f $Table.Name)
+	}
+    }
+}
+
+function Enumerate-AppServices ($AllResources) {
 
 }
 
@@ -235,7 +322,7 @@ Service Principal (sp):
     If($CredentialType -eq "user") {
         Test-UserCredential
     } ElseIf($CredentialType -eq "sa") {
-	Test-StorageAccountCredential
+	$StorageAccountContext = Test-StorageAccountCredential
     } ElseIf($CredentialType -eq "sp") {
 	Test-ServicePrincipalCredential 
     } Else {
@@ -243,11 +330,13 @@ Service Principal (sp):
 	Exit
     }
 
-    if(($CredentialType -eq "user") -Or ($CredentialType -eq "sp")) {
+    If(($CredentialType -eq "user") -Or ($CredentialType -eq "sp")) {
 	$AllResources = Get-ScopesAccess
 	Enumerate-KeyVaults $AllResources
-	Enumerate-StorageAccounts $AllResources
-    }
+	Enumerate-StorageAccounts $AllResources $null
+    } ElseIf ($CredentialType -eq "sa") {
+	Enumerate-StorageAccounts $null $StorageAccountContext
+    } 
 }
 
 ADVENTUROUSZULU
