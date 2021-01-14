@@ -56,6 +56,8 @@ function Test-StorageAccountCredential {
         # TODO: Display info about why credentials were invalid as returned by Connect-AzAccount
         Write-Host "Invalid Storage Account Credentials!"
     }
+
+    return $AzureStorageAccount
 }
 
 function Test-ServicePrincipalCredential {
@@ -77,8 +79,8 @@ function Test-ServicePrincipalCredential {
 }
 
 function Get-ScopesAccess {
-    Write-Output ""
-    Write-Output "Printing out accessible resources/resource groups/subscriptions/tenants with the provided credentials"
+    Write-Host ""
+    Write-Host "Printing out accessible resources/resource groups/subscriptions/tenants with the provided credentials"
     $Context = Get-AzContext
     $AllResources = @()
 
@@ -89,60 +91,193 @@ function Get-ScopesAccess {
 
     $Tenants = Get-AzTenant -DefaultProfile $Context
 
-    Write-Output ""
-    Write-Output "Accessible Tenants: "
+    Write-Host ""
+    Write-Host "Accessible Tenants: "
     $Tenants | ForEach-Object {
-        '{0} ({1}) - {2}' -f $_.Id, $_.Name, ($_.Domains -join ",")
+        Write-Host ('{0} ({1}) - {2}' -f $_.Id, $_.Name, ($_.Domains -join ","))
     }
 
     # TODO: Ensure the following call to Get-AzSubscription will grab all subscriptions across multiple tenants
     $Subscriptions = Get-AzSubscription -DefaultProfile $Context
 
     ForEach($Subscription in $Subscriptions) {
-        Write-Output ""
-        'Subscription: {0} ({1}):' -f $Subscription.Id, $Subscription.Name
-	Write-Output ""
+        Write-Host ""
+        Write-Host ('Subscription: {0} ({1}):' -f $Subscription.Id, $Subscription.Name)
+	Write-Host ""
 
         $Context = Set-AzContext -SubscriptionId $Subscription.Id
         $ResourceGroups = Get-AzResourceGroup -DefaultProfile $Context
 
+        # TODO: Note could have access to resource groups, but also resources in other RGs that they don't have access to. Need to account for this
         if(($ResourceGroups | Measure-Object).Count -gt 0) {
-	    Write-Output "Resource Groups / Resources: "
+	    Write-Host "Resource Groups / Resources: "
 	    ForEach($ResourceGroup in $ResourceGroups) {
-	        '  {0}' -f $ResourceGroup.ResourceGroupName
+	        Write-Host ('  {0}' -f $ResourceGroup.ResourceGroupName)
 
 	        $Resources = Get-AzResource -DefaultProfile $Context -ResourceGroupName $ResourceGroup.ResourceGroupName
 
 	        ForEach($Resource in $Resources) {
-	            '    * {0} ({1})' -f $Resource.Name, $Resource.ResourceType
-		    $AllResources.Add($Resource) 
+	            Write-Host ('    * {0} ({1})' -f $Resource.Name, $Resource.ResourceType)
+		    $AllResources += $Resource 
 	        }
 	    }
 	} Else {
-	    Write-Output "No read access to any resource groups, enumerating resources"
-	    Write-Output "Resource Groups / Resources: "
+	    Write-Host "No read access to any resource groups, enumerating resources"
+	    Write-Host "Resource Groups / Resources: "
 
 	    $IdentifiedResources = Get-AzResource -DefaultProfile $Context
 	    $IdentifiedResourceGroups = $IdentifiedResources | Sort-Object -Property ResourceGroupName | Select-Object -Property ResourceGroupName
 
 	    ForEach($ResourceGroup in $IdentifiedResourceGroups) {
 		$ResourceGroupName = $ResourceGroup.ResourceGroupName
-	        '  {0} (No Access!)' -f $ResourceGroupName
+	        Write-Host ('  {0} (No Access!)' -f $ResourceGroupName)
 
 		$Resources = $IdentifiedResources | Where-Object { $_.ResourceGroupName -eq $ResourceGroupName }
 
 	        ForEach($Resource in $Resources) {
-	            '    * {0} ({1})' -f $Resource.Name, $Resource.ResourceType
-		    $AllResources.Add($Resource) 
+	            Write-Host ('    * {0} ({1})' -f $Resource.Name, $Resource.ResourceType)
+		    $AllResources += $Resource 
 	        }
 	    }	
 	}
     }
-
+    
     return $AllResources
 }
 
-function Pillage-KeyVaults {
+function Enumerate-KeyVaults ($AllResources) {
+    # KeyVaults store Certificates, Key/Values, Secrets, Managed StorageAccount Keys, and HSMs
+    # TODO: Enumerate HSMs which are not held in KeyVaults, but associated with RG/Sub 
+    $KeyVaults = $AllResources | Where-Object { $_.ResourceType -eq "Microsoft.KeyVault/vaults" }
+
+    Write-Host ""
+    Write-Host ("Enumerating accessible KeyVaults' contents...Found {0} accessible KeyVaults" -f ($KeyVaults | Measure-Object).Count)
+
+    forEach($KeyVault in $KeyVaults) {
+	Write-Host ("KeyVault {0}:" -f $KeyVault.Name)
+
+	$Certificates = Get-AzKeyVaultCertificate -VaultName $KeyVault.Name
+	$Keys = Get-AzKeyVaultKey -VaultName $KeyVault.Name
+	$Secrets = Get-AzKeyVaultSecret -VaultName $KeyVault.Name
+	$MSAs = Get-AzKeyVaultManagedStorageAccount -VaultName $KeyVault.Name
+
+        Write-Host ""
+        Write-Host "  Certificates: "
+	ForEach($Certificate in $Certificates) {
+	    Write-Host ('    * {0}' -f $Certificate.Name)
+	}
+
+        Write-Host ""
+        Write-Host "  Keys: "
+	ForEach($Key in $Keys) {
+	    Write-Host ('    * {0}' -f $Key.Name)
+	}
+
+        Write-Host ""
+        Write-Host "  Secrets: "
+	ForEach($Secret in $Secrets) {
+	    Write-Host ('    * {0}' -f $Secret.Name)
+	}
+
+        Write-Host ""
+        Write-Host "  Managed Storage Account Keys: "
+	ForEach($MSA in $MSAs) {
+	    Write-Host ('    * {0}' -f $MSA.AccountName)
+	}
+    }	
+}
+
+function Enumerate-StorageAccounts {
+    Param (
+        [Parameter(Mandatory=$true, Position=0)][AllowNull()][Object[]] $AllResources,
+	[Parameter(Mandatory=$true, Position=1)][AllowNull()][Object] $StorageAccountContext
+    )
+
+    # Storage Accounts store Containers (Blobs), Shares (Files), Queues (Queue), and Tables (Table)
+    # TODO: Support auth with connection string, account key, and sas tokens
+    Write-Host ""
+    If($StorageAccountContext -eq $null) {
+        $StorageAccounts = $AllResources | Where-Object { $_.ResourceType -eq "Microsoft.Storage/storageAccounts" }
+	Write-Host ("Enumerating accessible StorageAccounts' contents...Found {0} accessible StorageAccounts" -f ($StorageAccounts | Measure-Object).Count)
+    } Else {
+        Write-Host "Enumerating 1 accessible StorageAccount"
+	$StorageAccounts = @( @{ Name = $StorageAccountContext.StorageAccountName } ) 
+    }
+    
+    forEach($StorageAccount in $StorageAccounts) {
+	Write-Host ""
+	Write-Host ("StorageAccount {0}:" -f $StorageAccount.Name)
+
+	If($StorageAccountContext -eq $null) {
+	    $AccountKeys = Get-AzStorageAccountKey -ResourceGroupName $StorageAccount.ResourceGroupName -Name $StorageAccount.Name
+	    # May need to use Storage Account Keys that identity has access to
+	    If($AccountKeys.Count -gt 0) {
+		$StorageContext = New-AzStorageContext -StorageAccountName $StorageAccount.Name -StorageAccountKey $AccountKeys[0].Value
+	    } Else {
+	        $StorageContext = New-AzStorageContext -StorageAccountName $StorageAccount.Name
+	    }
+	} Else {
+	    $StorageContext = $StorageAccountContext
+	}
+
+	$Containers = Get-AzStorageContainer -Context $StorageContext
+	$Shares = Get-AzStorageShare -Context $StorageContext
+	$Queues = Get-AzStorageQueue -Context $StorageContext
+	$Tables = Get-AzStorageTable -Context $StorageContext
+
+	Write-Host ""
+        Write-Host "  Containers/Blobs: "
+	ForEach($Container in $Containers) {
+	    Write-Host ('    * {0}: ' -f $Container.Name)
+
+	    try {
+	        $Blobs = Get-AzStorageBlob -Context $StorageContext -Container $Container.Name -ErrorAction Stop
+	    } catch {
+	        If($_.Exception.message.Contains("AuthorizationPermissionMismatch")) {
+		    Write-Host "      (No List access to container)"
+		}
+		$Blobs = @()
+	    }
+	    
+	    ForEach($Blob in $Blobs) {
+	        Write-Host ('      - {0}' -f $Blob.Name)
+	    }
+	}
+        
+	Write-Host ""
+        Write-Host "  Shares/Files: "
+	ForEach($Share in $Shares) {
+	    Write-Host ('    * {0}: ' -f $Share.Name)
+
+	    try {
+	        $Files = Get-AzStorageFile -Context $StorageContext -ShareName $Share.Name -ErrorAction Stop
+	    } catch {
+	        If($_.Exception.message.Contains("AuthorizationPermissionMismatch")) {
+		    Write-Host "      (No List access to share)"
+		}
+		$Files = @()
+	    }
+	    
+	    ForEach($File in $Files) {
+	        Write-Host ('      - {0}' -f $File.Name)
+	    }
+	}
+        
+	Write-Host ""
+        Write-Host "  Queues: "
+	ForEach($Queue in $Queues) {
+	    Write-Host ('    * {0}: ' -f $Queue.Name)
+	}
+        
+	Write-Host ""
+        Write-Host "  Tables: "
+	ForEach($Table in $Tables) {
+	    Write-Host ('    * {0}: ' -f $Table.Name)
+	}
+    }
+}
+
+function Enumerate-AppServices ($AllResources) {
 
 }
 
@@ -191,16 +326,22 @@ Service Principal (sp):
 
     If($CredentialType -eq "user") {
         Test-UserCredential
-	Get-ScopesAccess
     } ElseIf($CredentialType -eq "sa") {
-	Test-StorageAccountCredential
+	$StorageAccountContext = Test-StorageAccountCredential
     } ElseIf($CredentialType -eq "sp") {
 	Test-ServicePrincipalCredential 
-	Get-ScopesAccess
     } Else {
 	Write-Host "Unsupported Credential Type, exiting"
 	Exit
     }
+
+    If(($CredentialType -eq "user") -Or ($CredentialType -eq "sp")) {
+	$AllResources = Get-ScopesAccess
+	Enumerate-KeyVaults $AllResources
+	Enumerate-StorageAccounts $AllResources $null
+    } ElseIf ($CredentialType -eq "sa") {
+	Enumerate-StorageAccounts $null $StorageAccountContext
+    } 
 }
 
 ADVENTUROUSZULU
