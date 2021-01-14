@@ -209,18 +209,23 @@ function Enumerate-StorageAccounts {
 	Write-Host ("StorageAccount {0}:" -f $StorageAccount.Name)
 
 	If($StorageAccountContext -eq $null) {
-	    $StorageContext = New-AzStorageContext -StorageAccountName $StorageAccount.Name
+	    $AccountKeys = Get-AzStorageAccountKey -ResourceGroupName $StorageAccount.ResourceGroupName -Name $StorageAccount.Name
+	    # May need to use Storage Account Keys that identity has access to
+	    If($AccountKeys.Count -gt 0) {
+		$StorageContext = New-AzStorageContext -StorageAccountName $StorageAccount.Name -StorageAccountKey $AccountKeys[0].Value
+	    } Else {
+	        $StorageContext = New-AzStorageContext -StorageAccountName $StorageAccount.Name
+	    }
 	} Else {
 	    $StorageContext = $StorageAccountContext
 	}
 
-        # TODO: handle account key if no access
 	$Containers = Get-AzStorageContainer -Context $StorageContext
 	$Shares = Get-AzStorageShare -Context $StorageContext
 	$Queues = Get-AzStorageQueue -Context $StorageContext
 	$Tables = Get-AzStorageTable -Context $StorageContext
 
-        Write-Host ""
+	Write-Host ""
         Write-Host "  Containers/Blobs: "
 	ForEach($Container in $Containers) {
 	    Write-Host ('    * {0}: ' -f $Container.Name)
