@@ -236,7 +236,7 @@ function Get-AccessibleResources {
 	}
     }
 
-    return @{ "Tenants": $AccessibleTenants; "ManagementGroups": $AccessibleMgmtGroups; "Subscriptions": $AccessibleSubscriptions; "ResourceGroups": $AccessibleResourceGroups; "Resources": $AccessibleResources}
+    return @{ Tenants = $AccessibleTenants; ManagementGroups = $AccessibleMgmtGroups; Subscriptions = $AccessibleSubscriptions; ResourceGroups = $AccessibleResourceGroups; Resources = $AccessibleResources }
 }
 
 
@@ -321,7 +321,7 @@ function Write-StorageAccountsInfo {
     )
 
     # Storage Accounts store Containers (Blobs), Shares (Files), Queues (Queue), and Tables (Table)
-    # TODO: Support auth with connection string, account key, and sas tokens
+    # TODO: Support auth with connection string and sas tokens
     Write-Host ""
     If($StorageAccountContext -eq $null) {
         $StorageAccounts = $AllResources | Where-Object { $_.ResourceType -eq "Microsoft.Storage/storageAccounts" }
@@ -424,14 +424,54 @@ function Run-SecretSearch ($AllResources) {
 	    Write-Host "Password 2: " + $Creds.Password2
 	}
     }
+}
 
+function Show-Menu {
+    param (
+      [string] $CredType
+    )
+
+    Write-Host ""
+    Write-Host "Here are your options: "
+    Write-Host ""
+    
+    If(($CredType -eq "user") -Or ($CredType -eq "sp")) {
+        Write-Host "  [Discovery]"
+        Write-Host "    General:"
+        Write-Host "      1) Print out summary of accessible items"
+        Write-Host "      2) Print out all accessible resources/resource groups/subscriptions/management groups"
+        Write-Host "    Network:"
+        Write-Host "      3) Print out Public Attack Surface (such as Public IPs, Anonymous List Buckets, etc)"
+        Write-Host "      4) Print out Virtual Networks"
+        Write-Host "    Compute:"
+        Write-Host "      5) Print out Virtual Machines"
+        Write-Host "      6) Print out App Services"
+        Write-Host "      7) Print out Azure Functions"
+        Write-Host "      8) Print out Azure SQL Servers & Cosmos DBs"
+        Write-Host "      9) Print out Containers and K8Ss"
+        Write-Host "    Storage:"
+        Write-Host "      10) Print out accessible Storage Accounts"
+        Write-Host "      11) Print out accessible Key Vaults"
+        Write-Host "      12) Print out accessible Disks & Snapshots"
+        Write-Host "  [Credential Access]"
+        Write-Host "      13) Scan and dump accessible secrets (Key Vault Keys, App Services, SA Keys, etc)"
+        Write-Host "  [Collection/Exfiltration]"
+        Write-Host "      14) Download Storage Object Contents"
+    } ElseIf($CredType -eq "sa") {
+        Write-Host "  [Discovery]"
+        Write-Host "    Storage:"
+        Write-Host "      1) Print out the accessible Storage Account's Contents"
+        Write-Host "  [Collection/Exfiltration]"
+        Write-Host "      2) Download Storage Object Contents"
+    }
+    
+    Write-Host ""
 }
 
 function ADVENTUROUSZULU {
 <# 
 .SYNOPSIS
-  Script initialization routine
-.PARAMETER 
+   Main Script Function 
 #>
     $ErrorActionPreference = "SilentlyContinue"
 
@@ -470,6 +510,7 @@ Service Principal (sp):
 
     $CredentialType = Read-Host -Prompt "Enter the type of credential you have (user, sa, or sp)"
 
+    # Obtain credentials/secrets from the operator
     If($CredentialType -eq "user") {
         Confirm-UserCredential
     } ElseIf($CredentialType -eq "sa") {
@@ -481,13 +522,49 @@ Service Principal (sp):
 	Exit
     }
 
+    # Now that we have some credentials/secrets, it's time to retrieve accessible info
     If(($CredentialType -eq "user") -Or ($CredentialType -eq "sp")) {
 	$AllResources = Get-AccessibleResources
-	# Enumerate-KeyVaults $AllResources
-	#Enumerate-StorageAccounts $AllResources $null
-    } ElseIf ($CredentialType -eq "sa") {
-	#Enumerate-StorageAccounts $null $StorageAccountContext
-    } 
+    }
+
+    Do {
+        Show-Menu $CredentialType
+	$Selection = Read-Host "Please enter your selection (or q to quit)"
+
+        If(($CredentialType -eq "user") -Or ($CredentialType -eq "sp")) {
+	    Switch($Selection) {
+	        '1' {
+	        } '2' {
+	        } '3' {
+	        } '4' {
+	        } '5' {
+	        } '6' {
+	        } '7' {
+	        } '8' {
+	        } '9' {
+	        } '10' {
+	        } '11' {
+	        } '12' {
+	        } '13' {
+	        } '14' {
+		} 'q' {
+		    Exit
+	        } default {
+		    Write-Host "Invalid option"
+		}
+            }
+	} ElseIf($CredentialType -eq "sa") {
+	    Switch($Selection) {
+	        '1' {
+	        } '2' {
+		} 'q' {
+		    Exit
+	        } default {
+		    Write-Host "Invalid option"
+		}
+            }
+	}
+    } Until (($Selection -eq 'q') -Or ($Selection -eq 'quit') -Or ($Selection -eq 'exit'))
 }
 
 ADVENTUROUSZULU
