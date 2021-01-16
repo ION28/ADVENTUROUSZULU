@@ -242,10 +242,33 @@ function Get-AccessibleResources {
 
 ######################## Understand GENERAL ########################
 
+function Write-AccessibleResourcesSummary ($AllResources) {
+    Write-Host "Printing out a summary of all accessible resources/resource groups/subscriptions/management groups/tenants with the provided credentials"
+    Write-Host ""
+    Write-Host "Tenants:"
+    ForEach($Tenant in $AllResources.Tenants) {
+        Write-Host ('{0} ({1}) - {2}' -f $Tenant.AzureObject.Id, $Tenant.AzureObject.Name, ($Tenant.AzureObject.Domains -join ","))
+
+	If($AllResources.ManagementGroups.Count -gt 0) {
+	    Write-Host "  Management Groups/Subscriptions: "
+	    If($Tenant.RootGroup -ne $null) {
+	        Write-Host ("    {0}" -f $Tenant.RootGroup.AzureObject.DisplayName)
+		ForEach($ChildSub in $Tenant.RootGroup.ChildSubscriptions) {
+		    Write-Host $
+		}
+	    } Else {
+	        # If we don't have read on the Root Management Group, just list the groups we have access to	
+	    }
+	} Else {
+	    Write-Host "  Management Groups: "
+	    Write-Host "    (No access)"
+	}
+    }
+}
+
 
 function Write-AccessibleResources ($AllResources) {
-    Write-Host ""
-    Write-Host "Printing out accessible resources/resource groups/subscriptions/tenants with the provided credentials"
+    Write-Host "Printing out all accessible resources/resource groups/subscriptions/management groups/tenants with the provided credentials"
     # TODO: Recurse through and print resources
 }
 
@@ -253,21 +276,21 @@ function Write-AccessibleResources ($AllResources) {
 
 # Prints Public IPs, etc
 function Write-PublicAttackSurface ($AllResources) {
-
+    Write-Host "Not yet implemented."
 }
 
 function Write-VirtualNetworksInfo ($AllResources) {
-
+    Write-Host "Not yet implemented."
 }
 
 ######################## Understand COMPUTE ########################
 
 function Write-VirtualMachinesInfo ($AllResources) {
-
+    Write-Host "Not yet implemented."
 }
 
 function Write-AppServicesInfo ($AllResources) {
-
+    Write-Host "Not yet implemented."
 }
 
 ######################## Understand STORAGE ########################
@@ -450,13 +473,16 @@ function Show-Menu {
         Write-Host "      8) Print out Azure SQL Servers & Cosmos DBs"
         Write-Host "      9) Print out Containers and K8Ss"
         Write-Host "    Storage:"
-        Write-Host "      10) Print out accessible Storage Accounts"
-        Write-Host "      11) Print out accessible Key Vaults"
+        Write-Host "      10) Print out accessible Key Vaults"
+        Write-Host "      11) Print out accessible Storage Accounts"
         Write-Host "      12) Print out accessible Disks & Snapshots"
         Write-Host "  [Credential Access]"
         Write-Host "      13) Scan and dump accessible secrets (Key Vault Keys, App Services, SA Keys, etc)"
+        Write-Host "  [Execution]"
+        Write-Host "      14) What Compute 'creation' operations can you do (Create VMs, Create Functions, etc)"
+        Write-Host "      15) What Compute 'control' operations can you do (Start/Stop VMs, Run Commands, Install Custom Extensions, etc)"
         Write-Host "  [Collection/Exfiltration]"
-        Write-Host "      14) Download Storage Object Contents"
+        Write-Host "      16) Download Storage Object Contents"
     } ElseIf($CredType -eq "sa") {
         Write-Host "  [Discovery]"
         Write-Host "    Storage:"
@@ -530,20 +556,29 @@ Service Principal (sp):
     Do {
         Show-Menu $CredentialType
 	$Selection = Read-Host "Please enter your selection (or q to quit)"
+	Write-Host ""
 
         If(($CredentialType -eq "user") -Or ($CredentialType -eq "sp")) {
 	    Switch($Selection) {
 	        '1' {
+		    Write-AccessibleResourcesSummary $AllResources
 	        } '2' {
+		    Write-AccessibleResources $AllResources
 	        } '3' {
+		    Write-PublicAttackSurface $AllResources
 	        } '4' {
+		    Write-VirtualNetworksInfo $AllResources
 	        } '5' {
+		    Write-VirtualMachinesInfo $AllResources
 	        } '6' {
+		    Write-AppServicesInfo $AllResources
 	        } '7' {
 	        } '8' {
 	        } '9' {
 	        } '10' {
+		    Write-KeyVaultsInfo $AllResources
 	        } '11' {
+		    Write-StorageAccountsInfo $AllResources $null
 	        } '12' {
 	        } '13' {
 	        } '14' {
@@ -556,6 +591,7 @@ Service Principal (sp):
 	} ElseIf($CredentialType -eq "sa") {
 	    Switch($Selection) {
 	        '1' {
+		    Write-StorageAccountsInfo $null $StorageAccountContext
 	        } '2' {
 		} 'q' {
 		    Exit
