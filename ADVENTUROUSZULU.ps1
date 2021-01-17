@@ -242,12 +242,12 @@ function Get-AccessibleResources {
 function Write-RecursiveAzureItems ($Root, $Level) {
     If($Root.GetType().Name -eq "AzureTenant") {
         Write-Host (('    ' * $Level) + $Root.AzureObject.Name + " (Tenant)")
-	Write-RecursiveAzureItems $Root.RootGroup ($Level + 1)
+	Write-RecursiveAzureItems $Root.RootGroup ($Level + 1) 
     } ElseIf($Root.GetType().Name -eq "AzureMgmtGroup") {
 	Write-Host ""
         Write-Host (('    ' * $Level) + $Root.AzureObject.DisplayName + " (Management Group)")
 	ForEach($ChildSub in $Root.ChildSubscriptions) {
-	    Write-RecursiveAzureItems $ChildSub ($Level + 1)
+	    Write-RecursiveAzureItems $ChildSub ($Level + 1) 
 	}
 	ForEach($ChildGroup in $Root.ChildGroups) {
 	    Write-RecursiveAzureItems $ChildGroup ($Level + 1)
@@ -256,7 +256,7 @@ function Write-RecursiveAzureItems ($Root, $Level) {
 	Write-Host ""
         Write-Host (('    ' * $Level) + $Root.AzureObject.Name + " (Subscription)")
 	ForEach($RG in $Root.ResourceGroups) {
-	    Write-RecursiveAzureItems $RG ($Level + 1)
+	    Write-RecursiveAzureItems $RG ($Level + 1) 
 	}
     } ElseIf($Root.GetType().Name -eq "AzureResourceGroup") {
 	If($Root.AzureObject.ResourceGroupName -ne $null) {
@@ -265,10 +265,10 @@ function Write-RecursiveAzureItems ($Root, $Level) {
             Write-Host (('    ' * $Level) + $Root.Name + " (Resource Group) (No Access)")
 	}
 	ForEach($Res in $Root.Resources) {
-	    Write-RecursiveAzureItems $Res ($Level + 1)
+	    Write-RecursiveAzureItems $Res ($Level + 1) 
 	}
     } ElseIf($Root.GetType().Name -eq "AzureResource") {
-        Write-Host (('    ' * $Level) + $Root.AzureObject.Name + " (Resource)")
+        Write-Host (('    ' * $Level) + $Root.AzureObject.Name + " (" + $Root.AzureObject.ResourceType + ")")
     }
 }
 
@@ -277,24 +277,24 @@ function Write-RecursiveAzureItems ($Root, $Level) {
 function Write-AccessibleResourcesSummary ($AllResources) {
     Write-Host "Printing out a summary of all accessible resources/resource groups/subscriptions/management groups/tenants with the provided credentials"
     Write-Host ""
-    Write-Host "Tenants:"
-    ForEach($Tenant in $AllResources.Tenants) {
-        Write-Host ('{0} ({1}) - {2}' -f $Tenant.AzureObject.Id, $Tenant.AzureObject.Name, ($Tenant.AzureObject.Domains -join ","))
-
-	If($AllResources.ManagementGroups.Count -gt 0) {
-	    Write-Host "  Management Groups/Subscriptions: "
-	    If($Tenant.RootGroup -ne $null) {
-	        Write-Host ("    {0}:" -f $Tenant.RootGroup.AzureObject.DisplayName)
-		ForEach($ChildSub in $Tenant.RootGroup.ChildSubscriptions) {
-		    Write-Host ("") 
-		}
-	    } Else {
-	        # If we don't have read on the Root Management Group, just list the groups we have access to	
-	    }
+    Write-Host ("You have some level of access to {0} tenants" -f $AllResources.Tenants.Count) 
+    Write-Host ("You have some level of access to {0} management groups" -f $AllResources.ManagementGroups.Count) 
+    Write-Host ("You have some level of access to {0} subscriptions" -f $AllResources.Subscriptions.Count) 
+    Write-Host ("You have some level of access to {0} resource groups" -f $AllResources.ResourceGroups.Count) 
+    Write-Host ("You have some level of access to {0} resources" -f $AllResources.Resources.Count)
+    Write-Host ""
+    Write-Host "Of these resources, there are: "
+    $ResourceTypes = @{}
+    $AllResources.Resources | ForEach-Object {
+	If($ResourceTypes.ContainsKey($_.AzureObject.ResourceType)) {
+	    $ResourceTypes[$_.AzureObject.ResourceType] += 1
 	} Else {
-	    Write-Host "  Management Groups: "
-	    Write-Host "    (No access)"
+	    $ResourceTypes.Add($_.AzureObject.ResourceType, 1)
 	}
+    }
+
+    ForEach($ResourceType in $ResourceTypes.GetEnumerator() | Sort Name) {
+        Write-Host ("    {0} {1}" -f $ResourceTypes[$ResourceType.Name], $ResourceType.Name)
     }
 }
 
@@ -302,7 +302,6 @@ function Write-AccessibleResourcesSummary ($AllResources) {
 function Write-AccessibleResources ($AllResources) {
     Write-Host "Printing out all accessible resources/resource groups/subscriptions/management groups/tenants with the provided credentials"
     Write-Host ""
-    # TODO: Recurse through and print resources
     ForEach($Tenant in $AllResources.Tenants) {
 	If($Tenant.RootGroup -ne $null) {
             Write-RecursiveAzureItems $Tenant 0
