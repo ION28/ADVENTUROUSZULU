@@ -18,6 +18,7 @@ class AzureSubscription {
     [AzureMgmtGroup] $ParentGroup
     [AzureResourceGroup[]] $ResourceGroups
     [Object] $AzureObject
+    [Object] $AzureContext
 }
 
 class AzureResourceGroup {
@@ -163,10 +164,11 @@ function Get-AccessibleResources {
 	$Sub = New-Object AzureSubscription
 	$Sub.AzureObject = $Subscription
 	$Sub.Tenant = ($AccessibleTenants | Where-Object { $_.AzureObject.Id -eq $Sub.AzureObject.TenantId })
+	$Context = Set-AzContext -SubscriptionId $Subscription.Id
+	$Sub.AzureContext = $Context
 	$AccessibleSubscriptions += $Sub
         
         # Retrieve Resource Groups associated with Subscription
-	$Context = Set-AzContext -SubscriptionId $Subscription.Id
         $ResourceGroups = Get-AzResourceGroup -DefaultProfile $Context
 
         if($ResourceGroups.Count -gt 0) {
@@ -346,41 +348,66 @@ function Write-AppServicesInfo ($AllResources) {
 function Write-KeyVaultsInfo ($AllResources) {
     # KeyVaults store Certificates, Key/Values, Secrets, Managed StorageAccount Keys, and HSMs
     # TODO: Enumerate HSMs which are not held in KeyVaults, but associated with RG/Sub 
-    $KeyVaults = $AllResources | Where-Object { $_.ResourceType -eq "Microsoft.KeyVault/vaults" }
+    $KeyVaults = $AllResources.Resources | Where-Object { $_.AzureObject.ResourceType -eq "Microsoft.KeyVault/vaults" }
 
     Write-Host ""
     Write-Host ("Enumerating accessible KeyVaults' contents...Found {0} accessible KeyVaults" -f ($KeyVaults | Measure-Object).Count)
 
-    forEach($KeyVault in $KeyVaults) {
-	Write-Host ("KeyVault {0}:" -f $KeyVault.Name)
-
-	$Certificates = Get-AzKeyVaultCertificate -VaultName $KeyVault.Name
-	$Keys = Get-AzKeyVaultKey -VaultName $KeyVault.Name
-	$Secrets = Get-AzKeyVaultSecret -VaultName $KeyVault.Name
-	$MSAs = Get-AzKeyVaultManagedStorageAccount -VaultName $KeyVault.Name
+    ForEach($KeyVault in $KeyVaults) {
+	Write-Host ""
+	$Context = $KeyVault.ResourceGroup.Subscription.AzureContext
+	Write-Host ("KeyVault {0}:" -f $KeyVault.AzureObject.Name)
 
         Write-Host ""
         Write-Host "  Certificates: "
-	ForEach($Certificate in $Certificates) {
-	    Write-Host ('    * {0}' -f $Certificate.Name)
+        try {
+	    $Certificates = Get-AzKeyVaultCertificate -VaultName $KeyVault.AzureObject.Name -DefaultProfile $Context -ErrorAction Stop
+	    ForEach($Certificate in $Certificates) {
+	        Write-Host ('    * {0}' -f $Certificate.Name)
+	    }
+	} catch {
+	    If($_.Exception.message.Contains("Forbidden")) {
+	        Write-Host "    (No List access to Certificates)"
+	    }
 	}
-
+	
         Write-Host ""
         Write-Host "  Keys: "
-	ForEach($Key in $Keys) {
-	    Write-Host ('    * {0}' -f $Key.Name)
+	try {
+	    $Keys = Get-AzKeyVaultKey -VaultName $KeyVault.AzureObject.Name -DefaultProfile $Context -ErrorAction Stop
+	    ForEach($Key in $Keys) {
+	        Write-Host ('    * {0}' -f $Key.Name)
+	    }
+	} catch {
+	    If($_.Exception.message.Contains("Forbidden")) {
+	        Write-Host "    (No List access to Keys)"
+	    }
 	}
 
         Write-Host ""
         Write-Host "  Secrets: "
-	ForEach($Secret in $Secrets) {
-	    Write-Host ('    * {0}' -f $Secret.Name)
+	try {
+	    $Secrets = Get-AzKeyVaultSecret -VaultName $KeyVault.AzureObject.Name -DefaultProfile $Context -ErrorAction Stop
+	    ForEach($Secret in $Secrets) {
+	        Write-Host ('    * {0}' -f $Secret.Name)
+	    }
+	} catch {
+	    If($_.Exception.message.Contains("Forbidden")) {
+	        Write-Host "    (No List access to Secrets)"
+	    }
 	}
 
         Write-Host ""
         Write-Host "  Managed Storage Account Keys: "
-	ForEach($MSA in $MSAs) {
-	    Write-Host ('    * {0}' -f $MSA.AccountName)
+	try {
+	    $MSAs = Get-AzKeyVaultManagedStorageAccount -VaultName $KeyVault.AzureObject.Name -DefaultProfile $Context
+	    ForEach($MSA in $MSAs) {
+	        Write-Host ('    * {0}' -f $MSA.AccountName)
+	    }
+	} catch {
+	    If($_.Exception.message.Contains("Forbidden")) {
+	        Write-Host "    (No List access to MSAs)"
+	    }
 	}
     }	
 }
@@ -395,26 +422,28 @@ function Write-StorageAccountsInfo {
     # TODO: Support auth with connection string and sas tokens
     Write-Host ""
     If($StorageAccountContext -eq $null) {
-        $StorageAccounts = $AllResources | Where-Object { $_.ResourceType -eq "Microsoft.Storage/storageAccounts" }
+        $StorageAccounts = $AllResources.Resources | Where-Object { $_.AzureObject.ResourceType -eq "Microsoft.Storage/storageAccounts" }
 	Write-Host ("Enumerating accessible StorageAccounts' contents...Found {0} accessible StorageAccounts" -f ($StorageAccounts | Measure-Object).Count)
     } Else {
         Write-Host "Enumerating 1 accessible StorageAccount"
 	$StorageAccounts = @( @{ Name = $StorageAccountContext.StorageAccountName } ) 
     }
     
-    forEach($StorageAccount in $StorageAccounts) {
+    ForEach($StorageAccount in $StorageAccounts) {
 	Write-Host ""
-	Write-Host ("StorageAccount {0}:" -f $StorageAccount.Name)
 
 	If($StorageAccountContext -eq $null) {
-	    $AccountKeys = Get-AzStorageAccountKey -ResourceGroupName $StorageAccount.ResourceGroupName -Name $StorageAccount.Name
+	    Write-Host ("StorageAccount {0}:" -f $StorageAccount.AzureObject.Name)
+	    $Context = $StorageAccount.ResourceGroup.Subscription.AzureContext
+	    $AccountKeys = Get-AzStorageAccountKey -ResourceGroupName $StorageAccount.AzureObject.ResourceGroupName -Name $StorageAccount.AzureObject.Name -DefaultProfile $Context
 	    # May need to use Storage Account Keys that identity has access to
 	    If($AccountKeys.Count -gt 0) {
-		$StorageContext = New-AzStorageContext -StorageAccountName $StorageAccount.Name -StorageAccountKey $AccountKeys[0].Value
+		$StorageContext = New-AzStorageContext -StorageAccountName $StorageAccount.AzureObject.Name -StorageAccountKey $AccountKeys[0].Value
 	    } Else {
-	        $StorageContext = New-AzStorageContext -StorageAccountName $StorageAccount.Name
+	        $StorageContext = New-AzStorageContext -StorageAccountName $StorageAccount.AzureObject.Name
 	    }
 	} Else {
+	    Write-Host ("StorageAccount {0}:" -f $StorageAccount.Name)
 	    $StorageContext = $StorageAccountContext
 	}
 
@@ -445,7 +474,11 @@ function Write-StorageAccountsInfo {
 	Write-Host ""
         Write-Host "  Shares/Files: "
 	ForEach($Share in $Shares) {
-	    Write-Host ('    * {0}: ' -f $Share.Name)
+	    If($Share.IsSnapshot) {
+		Write-Host ('    * {0} (Snapshot from {1}): ' -f $Share.Name, $Share.SnapshotTime)
+	    } Else {
+		Write-Host ('    * {0}: ' -f $Share.Name)
+	    }
 
 	    try {
 	        $Files = Get-AzStorageFile -Context $StorageContext -ShareName $Share.Name -ErrorAction Stop
@@ -482,20 +515,23 @@ function Write-StorageAccountsInfo {
 function Run-SecretSearch ($AllResources) {
     Write-Host ""
     Write-Host "Searching for other accessible secrets and credentials"
+    Write-Host ""
 
     # Azure Container Registry Access Keys
-    $ACRs = $AllResources | Where-Object { $_.ResourceType -eq "Microsoft.ContainerRegistry/registries" }
+    $ACRs = $AllResources.Resources | Where-Object { $_.AzureObject.ResourceType -eq "Microsoft.ContainerRegistry/registries" }
     Write-Host ("Found {0} accessible Azure Container Registries" -f ($ACRs | Measure-Object).Count)
     If($ACRs.Count -gt 0) {
 	ForEach($ACR in $ACRs) {
-	    $Creds = Get-AzContainerRegistryCredential -ResourceGroupName $ACR.ResourceGroupName -Name $ACR.Name
-	    Write-Host ("ACR Name: " + $ACR.Name)
-	    Write-Host "Username: " + $Creds.Username
-	    Write-Host "Password: " + $Creds.Password
-	    Write-Host "Password 2: " + $Creds.Password2
+	    $Creds = Get-AzContainerRegistryCredential -ResourceGroupName $ACR.AzureObject.ResourceGroupName -Name $ACR.AzureObject.Name
+	    Write-Host ("ACR Name: " + $ACR.AzureObject.Name)
+	    Write-Host ("Username: " + $Creds.Username)
+	    Write-Host ("Password: " + $Creds.Password)
+	    Write-Host ("Password 2: " + $Creds.Password2)
 	}
     }
 }
+
+######################## Program Main ########################
 
 function Show-Menu {
     param (
@@ -509,8 +545,8 @@ function Show-Menu {
     If(($CredType -eq "user") -Or ($CredType -eq "sp")) {
         Write-Host "  [Discovery]"
         Write-Host "    General:"
-        Write-Host "      1) Print out summary of accessible items"
-        Write-Host "      2) Print out all accessible resources/resource groups/subscriptions/management groups"
+        Write-Host "      1) Print out a summary of accessible items"
+        Write-Host "      2) Print out all of the accessible resources/resource groups/subscriptions/management groups"
         Write-Host "    Network:"
         Write-Host "      3) Print out Public Attack Surface (such as Public IPs, Anonymous List Buckets, etc)"
         Write-Host "      4) Print out Virtual Networks"
@@ -629,7 +665,10 @@ Service Principal (sp):
 		    Write-StorageAccountsInfo $AllResources $null
 	        } '12' {
 	        } '13' {
+		    Run-SecretSearch $AllResources
 	        } '14' {
+	        } '15' {
+	        } '16' {
 		} 'q' {
 		    Exit
 	        } default {
