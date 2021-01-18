@@ -100,6 +100,26 @@ function Confirm-ServicePrincipalCredential {
     }
 }
 
+function Confirm-AccessTokenCredential {
+    $AccessToken = (Read-Host -Prompt "Enter your Azure JWT Access Token").Trim()
+    $KVAccessToken = (Read-Host -Prompt "Enter your Azure Key Vault JWT Access Token (if applicable) else just press enter").Trim()
+    $JWT = Parse-JWTtoken $AccessToken
+    If($KVAccessToken -ne "") {
+        $KVJWT = Parse-JWTtoken $KVAccessToken
+        $AzureAccount = Connect-AzAccount -AccessToken $AccessToken -KeyVaultAccessToken $KVJWT -AccountId $JWT.upn
+    } Else {
+        $AzureAccount = Connect-AzAccount -AccessToken $AccessToken -AccountId $JWT.upn
+    }
+
+
+    If($AzureAccount -ne $null) {
+	Write-Host "JWT Credential is valid"
+    } Else {
+	# TODO: Display info about why credentials were invalid as returned by Connect-AzAccount
+	Write-Host "Invalid JWT Credential!"
+    }
+}
+
 ######################## Utility Functions ########################
 
 function Check-Dependencies {
@@ -118,6 +138,7 @@ function Check-Dependencies {
 
     # Azure PowerShell is installed
     $SystemModules = Get-InstalledModule
+    # TODO: Require at least Az 5.3
     If($SystemModules.Name -NotContains "Az") {
         Write-Host "Azure PowerShell is not installed"
     }
@@ -125,8 +146,27 @@ function Check-Dependencies {
     return $true
 }
 
+# Function from: https://www.michev.info/Blog/Post/2140/decode-jwt-access-and-id-tokens-via-powershell
+function Parse-JWTtoken {
+    param([Parameter(Mandatory=$true)][string]$token)
+ 
+    If(!$token.Contains(".") -or !$token.StartsWith("eyJ")) {
+        Write-Error "Invalid token" -ErrorAction Stop 
+    }
+ 
+    $tokenheader = $token.Split(".")[0].Replace('-', '+').Replace('_', '/')
+    while ($tokenheader.Length % 4) { $tokenheader += "=" }
+ 
+    $tokenPayload = $token.Split(".")[1].Replace('-', '+').Replace('_', '/')
+    while ($tokenPayload.Length % 4) { $tokenPayload += "=" }
+    $tokenByteArray = [System.Convert]::FromBase64String($tokenPayload)
+    $tokenArray = [System.Text.Encoding]::ASCII.GetString($tokenByteArray)
+    $tokobj = $tokenArray | ConvertFrom-Json
+    
+    return $tokobj
+}
 
-function Get-AccessibleResources {
+function Get-AccessibleResourcesFromAzure {
     Write-Host ""
     Write-Host "Collecting accessible resources/resource groups/subscriptions/management groups/tenants with the provided credentials"
     $Context = Get-AzContext
@@ -219,7 +259,7 @@ function Get-AccessibleResources {
 
     # Need to populate Parent and Children Info for ManagementGroups now that we've retrieved all other info
     ForEach($Group in $AccessibleMgmtGroups) {
-	$FullInfo = Get-AzManagementGroup -DefaultProfile $Context -GroupName $Group.AzureObject.Name -Expand
+	$FullInfo = Get-AzManagementGroup -DefaultProfile $Context -GroupId $Group.AzureObject.Name -Expand
 
 	If($FullInfo.ParentId -eq $null) {
 	    $Group.ParentGroup = $null
@@ -241,24 +281,24 @@ function Get-AccessibleResources {
     return @{ Tenants = $AccessibleTenants; ManagementGroups = $AccessibleMgmtGroups; Subscriptions = $AccessibleSubscriptions; ResourceGroups = $AccessibleResourceGroups; Resources = $AccessibleResources }
 }
 
-function Write-RecursiveAzureItems ($Root, $Level) {
+function Get-RecursiveAzureItems ($Root, $Level) {
     If($Root.GetType().Name -eq "AzureTenant") {
         Write-Host (('    ' * $Level) + $Root.AzureObject.Name + " (Tenant)")
-	Write-RecursiveAzureItems $Root.RootGroup ($Level + 1) 
+	Get-RecursiveAzureItems $Root.RootGroup ($Level + 1) 
     } ElseIf($Root.GetType().Name -eq "AzureMgmtGroup") {
 	Write-Host ""
         Write-Host (('    ' * $Level) + $Root.AzureObject.DisplayName + " (Management Group)")
 	ForEach($ChildSub in $Root.ChildSubscriptions) {
-	    Write-RecursiveAzureItems $ChildSub ($Level + 1) 
+	    Get-RecursiveAzureItems $ChildSub ($Level + 1) 
 	}
 	ForEach($ChildGroup in $Root.ChildGroups) {
-	    Write-RecursiveAzureItems $ChildGroup ($Level + 1)
+	    Get-RecursiveAzureItems $ChildGroup ($Level + 1)
 	}
     } ElseIf($Root.GetType().Name -eq "AzureSubscription") {
 	Write-Host ""
         Write-Host (('    ' * $Level) + $Root.AzureObject.Name + " (Subscription)")
 	ForEach($RG in $Root.ResourceGroups) {
-	    Write-RecursiveAzureItems $RG ($Level + 1) 
+	    Get-RecursiveAzureItems $RG ($Level + 1) 
 	}
     } ElseIf($Root.GetType().Name -eq "AzureResourceGroup") {
 	If($Root.AzureObject.ResourceGroupName -ne $null) {
@@ -267,7 +307,7 @@ function Write-RecursiveAzureItems ($Root, $Level) {
             Write-Host (('    ' * $Level) + $Root.Name + " (Resource Group) (No Access)")
 	}
 	ForEach($Res in $Root.Resources) {
-	    Write-RecursiveAzureItems $Res ($Level + 1) 
+	    Get-RecursiveAzureItems $Res ($Level + 1) 
 	}
     } ElseIf($Root.GetType().Name -eq "AzureResource") {
         Write-Host (('    ' * $Level) + $Root.AzureObject.Name + " (" + $Root.AzureObject.ResourceType + ")")
@@ -276,7 +316,7 @@ function Write-RecursiveAzureItems ($Root, $Level) {
 
 ######################## Understand GENERAL ########################
 
-function Write-AccessibleResourcesSummary ($AllResources) {
+function Get-AccessibleResourcesSummary ($AllResources) {
     Write-Host "Printing out a summary of all accessible resources/resource groups/subscriptions/management groups/tenants with the provided credentials"
     Write-Host ""
     Write-Host ("You have some level of access to {0} tenants" -f $AllResources.Tenants.Count) 
@@ -301,12 +341,12 @@ function Write-AccessibleResourcesSummary ($AllResources) {
 }
 
 
-function Write-AccessibleResources ($AllResources) {
+function Get-AccessibleResources ($AllResources) {
     Write-Host "Printing out all accessible resources/resource groups/subscriptions/management groups/tenants with the provided credentials"
     Write-Host ""
     ForEach($Tenant in $AllResources.Tenants) {
 	If($Tenant.RootGroup -ne $null) {
-            Write-RecursiveAzureItems $Tenant 0
+            Get-RecursiveAzureItems $Tenant 0
 	} Else {
             # No ManagementGroup Group Access
 	    # TODO: Properly handle some Mgmt Group access where user doesn't have root mgmt group access
@@ -316,7 +356,7 @@ function Write-AccessibleResources ($AllResources) {
 	        Write-Host ($Tenant.AzureObject.Id + " (Tenant)")
 	    }
 	    ForEach($Subs in $AllResources.Subscriptions) {
-	        Write-RecursiveAzureItems $Subs 1
+	        Get-RecursiveAzureItems $Subs 1
 	    }
 	}
     }
@@ -325,35 +365,61 @@ function Write-AccessibleResources ($AllResources) {
 ######################## Understand NETWORK ########################
 
 # Prints Public IPs, etc
-function Write-PublicAttackSurface ($AllResources) {
+function Get-PublicAttackSurface ($AllResources) {
     Write-Host "Not yet implemented."
 }
 
-function Write-VirtualNetworksInfo ($AllResources) {
+function Get-VirtualNetworksInfo ($AllResources) {
     Write-Host "Not yet implemented."
 }
 
 ######################## Understand COMPUTE ########################
 
-function Write-VirtualMachinesInfo ($AllResources) {
+function Get-VirtualMachinesInfo ($AllResources) {
     Write-Host "Not yet implemented."
 }
 
-function Write-AppServicesInfo ($AllResources) {
+function Get-AppServicesInfo ($AllResources) {
     Write-Host "Not yet implemented."
 }
 
 ######################## Understand STORAGE ########################
 
-function Write-KeyVaultsInfo ($AllResources) {
+function Get-KeyVaultsInfo ($AllResources, $DisplayValues) {
     # KeyVaults store Certificates, Key/Values, Secrets, Managed StorageAccount Keys, and HSMs
     # TODO: Enumerate HSMs which are not held in KeyVaults, but associated with RG/Sub 
     $KeyVaults = $AllResources.Resources | Where-Object { $_.AzureObject.ResourceType -eq "Microsoft.KeyVault/vaults" }
-
     Write-Host ""
-    Write-Host ("Enumerating accessible KeyVaults' contents...Found {0} accessible KeyVaults" -f ($KeyVaults | Measure-Object).Count)
 
+    If($DisplayValues) {
+        If($KeyVaults.Count -gt 0) {
+            Write-Host ("You have access to the following {0} Key Vaults: " -f $KeyVaults.Count)
+	    For($i = 0; $i -lt $KeyVaults.Count; $i++) {
+	        Write-Host ("    {0}) {1}" -f $i, $KeyVaults[$i].AzureObject.Name)
+	    }
+	    Write-Host ""
+	    $Selection = Read-Host "Please enter the number of the Key Vault you'd like to view secrets in or 'all' to target each one"
+	    If($Selection -eq "all") {
+	        # Enum all key vaults
+	    } ElseIf(([int]$Selection -ge 0) -And ([int]$Selection -lt $KeyVaults.Count)) {
+	        # Enum specific key vaults
+	    } Else {
+	        Write-Host "Invalid input, skipping Key Vaults."
+		return
+	    }
+        } Else {
+	    Write-Host "No Key Vaults to pillage!"
+	}
+    } Else {
+        Write-Host ("Enumerating accessible KeyVaults' contents...Found {0} accessible KeyVaults" -f ($KeyVaults | Measure-Object).Count)
+    }
+
+    $i = -1
     ForEach($KeyVault in $KeyVaults) {
+	$i += 1
+	If($DisplayValues -And ($Selection -ne "all") -And ($Selection -ne $i)) {
+	    continue
+	}
 	Write-Host ""
 	$Context = $KeyVault.ResourceGroup.Subscription.AzureContext
 	Write-Host ("KeyVault {0}:" -f $KeyVault.AzureObject.Name)
@@ -366,7 +432,7 @@ function Write-KeyVaultsInfo ($AllResources) {
 	        Write-Host ('    * {0}' -f $Certificate.Name)
 	    }
 	} catch {
-	    If($_.Exception.message.Contains("Forbidden")) {
+	    If($_.Exception.message.Contains("Forbidden") -Or $_.Exception.message.Contains("Unauthorized")) {
 	        Write-Host "    (No List access to Certificates)"
 	    }
 	}
@@ -379,7 +445,7 @@ function Write-KeyVaultsInfo ($AllResources) {
 	        Write-Host ('    * {0}' -f $Key.Name)
 	    }
 	} catch {
-	    If($_.Exception.message.Contains("Forbidden")) {
+	    If($_.Exception.message.Contains("Forbidden") -Or $_.Exception.message.Contains("Unauthorized")) {
 	        Write-Host "    (No List access to Keys)"
 	    }
 	}
@@ -389,10 +455,25 @@ function Write-KeyVaultsInfo ($AllResources) {
 	try {
 	    $Secrets = Get-AzKeyVaultSecret -VaultName $KeyVault.AzureObject.Name -DefaultProfile $Context -ErrorAction Stop
 	    ForEach($Secret in $Secrets) {
-	        Write-Host ('    * {0}' -f $Secret.Name)
+		If($DisplayValues) {
+	            try {
+		        $Sec = Get-AzKeyVaultSecret -VaultName $KeyVault.AzureObject.Name -Name $Secret.Name -DefaultProfile $Context -ErrorAction Stop
+		        $ssPtr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Sec.SecretValue)
+		        try {
+		            $SecretValueText = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($ssPtr)
+		        } finally {
+		            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ssPtr)
+		        }
+	                Write-Host ('    * {0} - {1}' -f $Sec.Name, $SecretValueText)
+		    } catch {
+	                Write-Host ('    * {0} - (No Read Access!)' -f $Sec.Name)
+		    }
+		} Else {
+	            Write-Host ('    * {0}' -f $Secret.Name)
+		}
 	    }
 	} catch {
-	    If($_.Exception.message.Contains("Forbidden")) {
+	    If($_.Exception.message.Contains("Forbidden") -Or $_.Exception.message.Contains("Unauthorized")) {
 	        Write-Host "    (No List access to Secrets)"
 	    }
 	}
@@ -405,14 +486,15 @@ function Write-KeyVaultsInfo ($AllResources) {
 	        Write-Host ('    * {0}' -f $MSA.AccountName)
 	    }
 	} catch {
-	    If($_.Exception.message.Contains("Forbidden")) {
+	    If($_.Exception.message.Contains("Forbidden") -Or $_.Exception.message.Contains("Unauthorized")) {
 	        Write-Host "    (No List access to MSAs)"
 	    }
 	}
+
     }	
 }
 
-function Write-StorageAccountsInfo {
+function Get-StorageAccountsInfo {
     Param (
         [Parameter(Mandatory=$true, Position=0)][AllowNull()][Object[]] $AllResources,
 	[Parameter(Mandatory=$true, Position=1)][AllowNull()][Object] $StorageAccountContext
@@ -510,7 +592,7 @@ function Write-StorageAccountsInfo {
 
 
 
-######################## Expand ACCESS ########################
+######################## Credential Access ########################
 
 function Run-SecretSearch ($AllResources) {
     Write-Host ""
@@ -531,6 +613,11 @@ function Run-SecretSearch ($AllResources) {
     }
 }
 
+function Read-ResourceSecrets ($AllResources) {
+    Write-Host ""
+    Get-KeyVaultsInfo $AllResources $true
+}
+
 ######################## Program Main ########################
 
 function Show-Menu {
@@ -542,7 +629,7 @@ function Show-Menu {
     Write-Host "Here are your options: "
     Write-Host ""
     
-    If(($CredType -eq "user") -Or ($CredType -eq "sp")) {
+    If(($CredType -eq "user") -Or ($CredType -eq "sp") -Or ($CredType -eq "jwt")) {
         Write-Host "  [Discovery]"
         Write-Host "    General:"
         Write-Host "      1) Print out a summary of accessible items"
@@ -561,12 +648,13 @@ function Show-Menu {
         Write-Host "      11) Print out accessible Storage Accounts"
         Write-Host "      12) Print out accessible Disks & Snapshots"
         Write-Host "  [Credential Access]"
-        Write-Host "      13) Scan and dump accessible secrets (Key Vault Keys, App Services, SA Keys, etc)"
+        Write-Host "      13) Scan and dump secrets from all accessible services (Key Vault Keys, App Services, SA Keys, etc)"
+        Write-Host "      14) Dump secrets from particular service/resource (such as accessible Key Vaults)"
         Write-Host "  [Execution]"
-        Write-Host "      14) What Compute 'creation' operations can you do (Create VMs, Create Functions, etc)"
-        Write-Host "      15) What Compute 'control' operations can you do (Start/Stop VMs, Run Commands, Install Custom Extensions, etc)"
+        Write-Host "      15) What Compute 'creation' operations can you do (Create VMs, Create Functions, etc)"
+        Write-Host "      16) What Compute 'control' operations can you do (Start/Stop VMs, Run Commands, Install Custom Extensions, etc)"
         Write-Host "  [Collection/Exfiltration]"
-        Write-Host "      16) Download Storage Object Contents"
+        Write-Host "      17) Download Storage Object Contents"
     } ElseIf($CredType -eq "sa") {
         Write-Host "  [Discovery]"
         Write-Host "    Storage:"
@@ -615,10 +703,17 @@ Service Principal (sp):
     tenant: 987bb494-bfd4-413a-bfb3-958c1342f3a3
     
     NOTE: Tenant is displayed as 'id' sometimes such as in the return value when creating an SP
+JWT Credential (jwt):
+    Example 1:
+    Bearer Token (for management.core.windows.net): eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImtpZCI6Imk2bEdrM0ZaenhSY1ViMkMzbkVRN3N5SEpsWSJ9.eyJhdWQiOiI2ZTc0MTcyYi1iZTU2LTQ4NDMtOWZmNC1lNjZhMzliYjEyZTMiLCJpc3MiOiJodHRwczovL2xvZ2luLm1pY3Jvc29mdG9ubGluZS5jb20vNzJmOTg4YmYtODZmMS00MWFmLTkxYWItMmQ3Y2QwMTFkYjQ3L3YyLjAiLCJpYXQiOjE1MzcyMzEwNDgsIm5iZiI6MTUzNzIzMTA0OCwiZXhwIjoxNTM3MjM0OTQ4LCJhaW8iOiJBWFFBaS84SUFBQUF0QWFaTG8zQ2hNaWY2S09udHRSQjdlQnE0L0RjY1F6amNKR3hQWXkvQzNqRGFOR3hYZDZ3TklJVkdSZ2hOUm53SjFsT2NBbk5aY2p2a295ckZ4Q3R0djMzMTQwUmlvT0ZKNGJDQ0dWdW9DYWcxdU9UVDIyMjIyZ0h3TFBZUS91Zjc5UVgrMEtJaWpkcm1wNjlSY3R6bVE9PSIsImF6cCI6IjZlNzQxNzJiLWJlNTYtNDg0My05ZmY0LWU2NmEzOWJiMTJlMyIsImF6cGFjciI6IjAiLCJuYW1lIjoiQWJlIExpbmNvbG4iLCJvaWQiOiI2OTAyMjJiZS1mZjFhLTRkNTYtYWJkMS03ZTRmN2QzOGU0NzQiLCJwcmVmZXJyZWRfdXNlcm5hbWUiOiJhYmVsaUBtaWNyb3NvZnQuY29tIiwicmgiOiJJIiwic2NwIjoiYWNjZXNzX2FzX3VzZXIiLCJzdWIiOiJIS1pwZmFIeVdhZGVPb3VZbGl0anJJLUtmZlRtMjIyWDVyclYzeERxZktRIiwidGlkIjoiNzJmOTg4YmYtODZmMS00MWFmLTkxYWItMmQ3Y2QwMTFkYjQ3IiwidXRpIjoiZnFpQnFYTFBqMGVRYTgyUy1JWUZBQSIsInZlciI6IjIuMCJ9.pj4N-w_3Us9DrBLfpCt
     
+    Example 2:
+    Bearer Token (for management.core.windows.net): eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImtpZCI6Imk2bEdrM0ZaenhSY1ViMkMzbkVRN3N5SEpsWSJ9.eyJhdWQiOiI2ZTc0MTcyYi1iZTU2LTQ4NDMtOWZmNC1lNjZhMzliYjEyZTMiLCJpc3MiOiJodHRwczovL2xvZ2luLm1pY3Jvc29mdG9ubGluZS5jb20vNzJmOTg4YmYtODZmMS00MWFmLTkxYWItMmQ3Y2QwMTFkYjQ3L3YyLjAiLCJpYXQiOjE1MzcyMzEwNDgsIm5iZiI6MTUzNzIzMTA0OCwiZXhwIjoxNTM3MjM0OTQ4LCJhaW8iOiJBWFFBaS84SUFBQUF0QWFaTG8zQ2hNaWY2S09udHRSQjdlQnE0L0RjY1F6amNKR3hQWXkvQzNqRGFOR3hYZDZ3TklJVkdSZ2hOUm53SjFsT2NBbk5aY2p2a295ckZ4Q3R0djMzMTQwUmlvT0ZKNGJDQ0dWdW9DYWcxdU9UVDIyMjIyZ0h3TFBZUS91Zjc5UVgrMEtJaWpkcm1wNjlSY3R6bVE9PSIsImF6cCI6IjZlNzQxNzJiLWJlNTYtNDg0My05ZmY0LWU2NmEzOWJiMTJlMyIsImF6cGFjciI6IjAiLCJuYW1lIjoiQWJlIExpbmNvbG4iLCJvaWQiOiI2OTAyMjJiZS1mZjFhLTRkNTYtYWJkMS03ZTRmN2QzOGU0NzQiLCJwcmVmZXJyZWRfdXNlcm5hbWUiOiJhYmVsaUBtaWNyb3NvZnQuY29tIiwicmgiOiJJIiwic2NwIjoiYWNjZXNzX2FzX3VzZXIiLCJzdWIiOiJIS1pwZmFIeVdhZGVPb3VZbGl0anJJLUtmZlRtMjIyWDVyclYzeERxZktRIiwidGlkIjoiNzJmOTg4YmYtODZmMS00MWFmLTkxYWItMmQ3Y2QwMTFkYjQ3IiwidXRpIjoiZnFpQnFYTFBqMGVRYTgyUy1JWUZBQSIsInZlciI6IjIuMCJ9.pj4N-w_3Us9DrBLfpCt
+    Key Vault Access Token (for vault.azure.net): eyJ0...
+
 "@
 
-    $CredentialType = Read-Host -Prompt "Enter the type of credential you have (user, sa, or sp)"
+    $CredentialType = Read-Host -Prompt "Enter the type of credential you have (user, sa, sp, or jwt)"
 
     # Obtain credentials/secrets from the operator
     If($CredentialType -eq "user") {
@@ -627,14 +722,16 @@ Service Principal (sp):
 	$StorageAccountContext = Confirm-StorageAccountCredential
     } ElseIf($CredentialType -eq "sp") {
 	Confirm-ServicePrincipalCredential 
+    } ElseIf($CredentialType -eq "jwt") {
+	Confirm-AccessTokenCredential 
     } Else {
 	Write-Host "Unsupported Credential Type, exiting"
 	Exit
     }
 
     # Now that we have some credentials/secrets, it's time to retrieve accessible info
-    If(($CredentialType -eq "user") -Or ($CredentialType -eq "sp")) {
-	$AllResources = Get-AccessibleResources
+    If(($CredentialType -eq "user") -Or ($CredentialType -eq "sp") -Or ($CredentialType -eq "jwt")) {
+	$AllResources = Get-AccessibleResourcesFromAzure
     }
 
     Do {
@@ -642,33 +739,35 @@ Service Principal (sp):
 	$Selection = Read-Host "Please enter your selection (or q to quit)"
 	Write-Host ""
 
-        If(($CredentialType -eq "user") -Or ($CredentialType -eq "sp")) {
+        If(($CredentialType -eq "user") -Or ($CredentialType -eq "sp") -Or ($CredentialType -eq "jwt")) {
 	    Switch($Selection) {
 	        '1' {
-		    Write-AccessibleResourcesSummary $AllResources
+		    Get-AccessibleResourcesSummary $AllResources
 	        } '2' {
-		    Write-AccessibleResources $AllResources
+		    Get-AccessibleResources $AllResources
 	        } '3' {
-		    Write-PublicAttackSurface $AllResources
+		    Get-PublicAttackSurface $AllResources
 	        } '4' {
-		    Write-VirtualNetworksInfo $AllResources
+		    Get-VirtualNetworksInfo $AllResources
 	        } '5' {
-		    Write-VirtualMachinesInfo $AllResources
+		    Get-VirtualMachinesInfo $AllResources
 	        } '6' {
-		    Write-AppServicesInfo $AllResources
+		    Get-AppServicesInfo $AllResources
 	        } '7' {
 	        } '8' {
 	        } '9' {
 	        } '10' {
-		    Write-KeyVaultsInfo $AllResources
+		    Get-KeyVaultsInfo $AllResources $false
 	        } '11' {
-		    Write-StorageAccountsInfo $AllResources $null
+		    Get-StorageAccountsInfo $AllResources $null
 	        } '12' {
 	        } '13' {
 		    Run-SecretSearch $AllResources
 	        } '14' {
+		    Read-ResourceSecrets $AllResources
 	        } '15' {
 	        } '16' {
+	        } '17' {
 		} 'q' {
 		    Exit
 	        } default {
@@ -678,7 +777,7 @@ Service Principal (sp):
 	} ElseIf($CredentialType -eq "sa") {
 	    Switch($Selection) {
 	        '1' {
-		    Write-StorageAccountsInfo $null $StorageAccountContext
+		    Get-StorageAccountsInfo $null $StorageAccountContext
 	        } '2' {
 		} 'q' {
 		    Exit
